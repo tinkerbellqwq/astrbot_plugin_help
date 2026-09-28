@@ -1,3 +1,4 @@
+import glob
 import io
 import os
 import textwrap
@@ -16,6 +17,39 @@ class AstrBotHelpDrawer:
     FONT_PATH_REGULAR = os.path.join(os.path.dirname(__file__), "DouyinSansBold.otf")
     FONT_PATH_BOLD = FONT_PATH_REGULAR
     LOGO_PATH = os.path.join(os.path.dirname(__file__), "astrbot_logo.jpg")
+    # 插件目录下的 fonts/ 文件夹,可放入额外的字体文件(如繁体字体)作为回退字体
+    FONT_FALLBACK_DIR = os.path.join(os.path.dirname(__file__), "fonts")
+
+    # 自带字体(抖音美好体)只覆盖简体常用字,遇到繁体字等缺失字形时
+    # 按优先级尝试以下系统中文字体进行补齐(Windows / macOS / Linux)
+    FALLBACK_FONT_SYSTEM_CANDIDATES = (
+        r"%WINDIR%\Fonts\msyh.ttc",
+        r"%WINDIR%\Fonts\msyhbd.ttc",
+        r"%WINDIR%\Fonts\simhei.ttf",
+        r"%WINDIR%\Fonts\Deng.ttf",
+        r"%WINDIR%\Fonts\simsun.ttc",
+        "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        "/System/Library/Fonts/STHeiti Medium.ttc",
+        "/Library/Fonts/Arial Unicode.ttf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/noto-cjk/NotoSansSC-Regular.otf",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "/usr/share/fonts/wqy-microhei/wqy-microhei.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+        "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+    )
+    # 部分 Linux 发行版目录结构不同,再按文件名模糊搜索一遍
+    FALLBACK_FONT_GLOB_PATTERNS = (
+        "/usr/share/fonts/*/*Noto*CJK*",
+        "/usr/share/fonts/*/*/*Noto*CJK*",
+        "/usr/share/fonts/*/*noto*cjk*",
+        "/usr/share/fonts/*/*/*noto*cjk*",
+        "/usr/share/fonts/*/wqy*",
+        "/usr/share/fonts/*/*wqy*",
+    )
 
     # 主题色
     COLOR_BACKGROUND_START = (248, 250, 255)
@@ -88,8 +122,8 @@ class AstrBotHelpDrawer:
         if self.logo_enabled:
             return self.TOP_AREA_HEIGHT
 
-        title_h = self.font_title.getbbox(self.title_text)[3] - self.font_title.getbbox(self.title_text)[1]
-        subtitle_h = self.font_subtitle.getbbox(self.subtitle_text)[3] - self.font_subtitle.getbbox(self.subtitle_text)[1]
+        title_h = self._text_ink_height(self.title_text, self.font_title)
+        subtitle_h = self._text_ink_height(self.subtitle_text, self.font_subtitle)
         computed = self.PADDING + title_h + self.HEADER_TEXT_GAP + subtitle_h + self.PADDING
         return max(self.TOP_AREA_MIN_NO_LOGO, computed)
 
@@ -129,6 +163,108 @@ class AstrBotHelpDrawer:
         except Exception as e:
             logger.error(f"加载字体时出错: {e}")
             exit()
+        # 回退字体相关状态:候选路径列表、按字号懒加载的实例缓存、缺字形检测结果缓存
+        self.fallback_font_paths = self._find_fallback_font_paths()
+        self._fallback_font_cache: Dict[int, Any] = {}
+        self._fallback_load_failed_logged = False
+        self._missing_glyph_cache: Dict[Tuple[int, str], bool] = {}
+
+    def _find_fallback_font_paths(self) -> List[str]:
+        """收集回退字体候选路径:配置指定 > 插件 fonts/ 目录 > 系统常见中文字体。"""
+        candidates: List[str] = []
+        custom = str(getattr(self.config, "font_path_fallback", "") or "").strip()
+        if custom:
+            candidates.append(custom)
+        if os.path.isdir(self.FONT_FALLBACK_DIR):
+            for name in sorted(os.listdir(self.FONT_FALLBACK_DIR)):
+                if name.lower().endswith((".ttf", ".otf", ".ttc")):
+                    candidates.append(os.path.join(self.FONT_FALLBACK_DIR, name))
+        for path in self.FALLBACK_FONT_SYSTEM_CANDIDATES:
+            candidates.append(os.path.expandvars(path))
+        for pattern in self.FALLBACK_FONT_GLOB_PATTERNS:
+            candidates.extend(sorted(glob.glob(pattern))[:2])
+        # 去重并只保留真实存在的文件
+        seen, result = set(), []
+        for path in candidates:
+            if path and path not in seen and os.path.isfile(path):
+                seen.add(path)
+                result.append(path)
+        return result
+
+    def _get_fallback_font(self, size: int):
+        """获取指定字号的回退字体实例,没有可用回退字体时返回 None。"""
+        if size in self._fallback_font_cache:
+            return self._fallback_font_cache[size]
+        if not self.fallback_font_paths:
+            return None
+        for path in self.fallback_font_paths:
+            try:
+                font = ImageFont.truetype(path, size)
+            except Exception:
+                continue
+            self._fallback_font_cache[size] = font
+            logger.info(f"回退字体已启用(补齐自带字体缺失的字形): {path}")
+            return font
+        # 所有候选都无法加载,清空避免反复尝试
+        self.fallback_font_paths = []
+        if not self._fallback_load_failed_logged:
+            self._fallback_load_failed_logged = True
+            logger.warning(
+                "回退字体加载失败,自带字体缺失的字形(如繁体字)将无法显示。"
+                "可在插件配置 font_path_fallback 中指定字体路径,"
+                "或将字体文件放入插件 fonts/ 目录"
+            )
+        return None
+
+    @staticmethod
+    def _glyph_missing(font: ImageFont.FreeTypeFont, ch: str) -> bool:
+        """判断字符在字体中是否缺失字形。
+
+        缺失字形渲染为空(.notdef 无墨迹),其 ink bbox 高度为 0;
+        空白字符本身也无墨迹,需排除。
+        """
+        if ch.isspace():
+            return False
+        try:
+            bbox = font.getbbox(ch)
+        except Exception:
+            return False
+        return bbox[3] - bbox[1] <= 0
+
+    def _text_runs(self, text: str, font: ImageFont.FreeTypeFont) -> List[Tuple[str, Any]]:
+        """将文本切分为 (片段, 字体) 列表:自带字体缺字形的字符改用回退字体绘制。"""
+        fallback = self._get_fallback_font(font.size)
+        if fallback is None:
+            return [(text, font)]
+        runs: List[Tuple[str, Any]] = []
+        cur_chars: List[str] = []
+        cur_font: Any = font
+        for ch in text:
+            if not self._glyph_missing(font, ch):
+                run_font = font
+            elif not self._glyph_missing(fallback, ch):
+                run_font = fallback
+            else:
+                # 两个字体都没有该字形,维持自带字体(与修复前行为一致)
+                run_font = font
+            if run_font is cur_font:
+                cur_chars.append(ch)
+            else:
+                runs.append(("".join(cur_chars), cur_font))
+                cur_chars, cur_font = [ch], run_font
+        runs.append(("".join(cur_chars), cur_font))
+        return runs
+
+    def _draw_text(self, draw, xy, text: str, font: ImageFont.FreeTypeFont, fill) -> None:
+        """按字形覆盖情况分段绘制文本,缺失字形用回退字体补齐。"""
+        x, y = xy
+        for seg, seg_font in self._text_runs(text, font):
+            draw.text((x, y), seg, font=seg_font, fill=fill)
+            x += seg_font.getlength(seg)
+
+    def _text_length(self, text: str, font: ImageFont.FreeTypeFont) -> float:
+        """计算文本宽度,与 _draw_text 的分段逻辑保持一致。"""
+        return sum(seg_font.getlength(seg) for seg, seg_font in self._text_runs(text, font))
 
     def _load_logo(self) -> None:
         try:
@@ -268,16 +404,10 @@ class AstrBotHelpDrawer:
         if not text:
             return (0, 0, 0, 0), (0, 0)
         try:
-            bbox = draw.textbbox((0, 0), text, font=font)
-            w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
-            return bbox, (w, h)
-        except AttributeError:
-            w = draw.textlength(text, font=font)
-            h = (
-                sum(font.getmetrics())
-                if sum(font.getmetrics()) > 0
-                else font.size * 1.2
-            )
+            w = self._text_length(text, font)
+            h = self._text_ink_height(text, font)
+            if w <= 0 or h <= 0:
+                raise ValueError
             return (0, 0, int(w), int(h)), (int(w), int(h))
         except Exception:
             est_w = len(text) * font.size * 0.6
@@ -286,6 +416,18 @@ class AstrBotHelpDrawer:
                 max(1, int(est_w)),
                 max(1, int(est_h)),
             )
+
+    def _text_ink_height(self, text: str, font: ImageFont.FreeTypeFont) -> int:
+        """计算文本墨迹高度:缺失字形由回退字体渲染,需用实际渲染它的字体测量,
+        否则纯繁体文本会量出 0 高度,导致卡片布局错乱。"""
+        height = 0
+        for seg, seg_font in self._text_runs(text, font):
+            try:
+                bbox = seg_font.getbbox(seg)
+            except Exception:
+                continue
+            height = max(height, bbox[3] - bbox[1])
+        return height
 
     def _draw_rounded_rectangle(
         self, draw, xy, radius, fill=None, outline=None, width=1
@@ -444,14 +586,15 @@ class AstrBotHelpDrawer:
                     ),
                     fill=self.COLOR_ACCENT,
                 )
-                draw.text(
+                self._draw_text(
+                    draw,
                     (
                         self.SECTION_TITLE_LEFT_MARGIN,
                         item["y"] + self.SECTION_MARKER_PADDING,
                     ),
                     item["name"],
-                    font=self.font_plugin_header,
-                    fill=self.COLOR_TEXT_HEADER,
+                    self.font_plugin_header,
+                    self.COLOR_TEXT_HEADER,
                 )
             elif item["type"] == "card":
                 x0, y0 = item["x"], item["y"]
@@ -465,19 +608,19 @@ class AstrBotHelpDrawer:
                     width=1,
                 )
                 # name
-                draw.text(
+                self._draw_text(
+                    draw,
                     (x0 + self.CARD_PADDING_X, y0 + self.CARD_PADDING_TOP),
                     item["name"],
-                    font=self.font_command,
-                    fill=self.COLOR_TEXT_COMMAND,
+                    self.font_command,
+                    self.COLOR_TEXT_COMMAND,
                 )
                 if item.get("desc"):
                     wrapped_desc = textwrap.wrap(item["desc"], width=12)
-                    bbox_cmd = self.font_command.getbbox(item["name"])
                     y_start = (
                         y0
                         + self.CARD_INTERNAL_SPACE
-                        + (bbox_cmd[3] - bbox_cmd[1])
+                        + self._text_ink_height(item["name"], self.font_command)
                         + self.NAME_DESC_SPACING
                     )
                     line_height = (
@@ -486,11 +629,12 @@ class AstrBotHelpDrawer:
                         + self.CARD_INTERNAL_SPACE
                     )
                     for i, line in enumerate(wrapped_desc):
-                        draw.text(
+                        self._draw_text(
+                            draw,
                             (x0 + self.CARD_PADDING_X, y_start + i * line_height),
                             line,
-                            font=self.font_desc,
-                            fill=self.COLOR_TEXT_DESC,
+                            self.font_desc,
+                            self.COLOR_TEXT_DESC,
                         )
 
     # ---------------- 主函数 ----------------
@@ -539,21 +683,22 @@ class AstrBotHelpDrawer:
 
         y_start_subtitle = (
             y_start_title
-            + self.font_title.getbbox(title_text)[3]
-            - self.font_title.getbbox(title_text)[1]
+            + self._text_ink_height(title_text, self.font_title)
             + self.HEADER_TEXT_GAP
         )
-        draw.text(
+        self._draw_text(
+            draw,
             (x_start, y_start_title),
             title_text,
-            font=self.font_title,
-            fill=self.COLOR_TEXT_HEADER,
+            self.font_title,
+            self.COLOR_TEXT_HEADER,
         )
-        draw.text(
+        self._draw_text(
+            draw,
             (x_start, y_start_subtitle),
             subtitle_text,
-            font=self.font_subtitle,
-            fill=self.COLOR_TEXT_SUBTITLE,
+            self.font_subtitle,
+            self.COLOR_TEXT_SUBTITLE,
         )
 
         # 绘制卡片
@@ -562,16 +707,17 @@ class AstrBotHelpDrawer:
         # 底部版权
         footer_text = f"{self.plugin_display_name} v{self.plugin_version}"
         bbox = draw.textbbox((0, 0), footer_text, font=self.font_footer)
-        fw = bbox[2] - bbox[0]
+        fw = self._text_length(footer_text, self.font_footer)
         fh = bbox[3] - bbox[1]
-        draw.text(
+        self._draw_text(
+            draw,
             (
                 self.IMG_WIDTH - fw - self.PADDING,
                 total_height - self.FOOTER_HEIGHT + (self.FOOTER_HEIGHT - fh) // 2,
             ),
             footer_text,
-            font=self.font_footer,
-            fill=self.COLOR_TEXT_FOOTER,
+            self.font_footer,
+            self.COLOR_TEXT_FOOTER,
         )
         # 转成 bytes
         with io.BytesIO() as output:

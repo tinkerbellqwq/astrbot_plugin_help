@@ -48,6 +48,16 @@ git clone https://github.com/Zhalslar/astrbot_plugin_help
 
 ![7791647af2717a4a933d209a4a1cd722_720](https://github.com/user-attachments/assets/cb29069c-5692-4b02-9747-0efb095c3c0d)
 
+### 繁体字/生僻字显示
+
+插件自带字体(抖音美好体)只覆盖简体常用字。生成图片时若遇到缺失字形(如繁体字`豬``強`),会自动改用回退字体补齐渲染,回退字体的查找顺序为:
+
+1. 插件配置 `font_path_fallback` 中指定的字体文件路径
+2. 插件目录下 `fonts/` 文件夹内的字体文件(.ttf/.otf/.ttc)
+3. 系统常见中文字体(微软雅黑 / PingFang / Noto Sans CJK / 文泉驿等)
+
+插件已在 `fonts/` 目录内置了繁体回退字体 `FallbackTC-Regular.otf`(基于 Noto Sans TC 子集化,约 3MB,SIL OFL 1.1 许可),开箱即可正确显示繁体字,无需额外配置。如需替换回退字体,可自行放入 `fonts/` 目录或在插件配置中填写字体路径。
+
 # 支持
 
 本插件改自Astrbot默认插件。

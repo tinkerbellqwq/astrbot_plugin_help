@@ -1,7 +1,7 @@
 name: astrbot_plugin_help # 这是你的插件的唯一识别名。
 display_name: 更好的帮助 # 插件的显示名称，可以包含空格和特殊字符
 desc: 查看所有命令，包括插件，返回一张帮助图片 # 插件简短描述
-version: v1.2.7 # 插件版本号。格式：v1.1.1 或者 v1.1
+version: v1.2.8 # 插件版本号。格式：v1.1.1 或者 v1.1
 author: tinker # 作者
 repo: https://github.com/tinkerbellqwq/astrbot_plugin_help # 插件的仓库地址
 astrbot_version: ">=4.17.0"

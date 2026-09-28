@@ -48,5 +48,11 @@
         "hint": "可以在插件目录替换astrbot_logo.jpg为自定义的logo。",
         "type": "bool",
         "default": true
+    },
+    "font_path_fallback": {
+        "description": "回退字体路径",
+        "hint": "自带字体缺少字形(如繁体字)时用该字体补齐。留空则自动在插件fonts/目录和系统中查找中文字体。",
+        "type": "string",
+        "default": ""
     }
 }
